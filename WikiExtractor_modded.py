@@ -70,6 +70,7 @@ import json
 from io import StringIO
 from multiprocessing import Queue, Process, Value, cpu_count
 from timeit import default_timer
+from collections import OrderedDict
 
 
 PY2 = sys.version_info[0] == 2
@@ -198,6 +199,10 @@ options = SimpleNamespace(
         'ref', 'references', 'img', 'imagemap', 'source', 'small',
         'sub', 'sup', 'indicator'
     ],
+
+    ##
+    # Header and contents are separated with JSON format
+    jsonHeader = False,
 )
 
 ##
@@ -546,11 +551,12 @@ class Extractor(object):
         """
         url = get_url(self.id)
         if options.write_json:
+            jsonized_text = self.text_to_json(text)
             json_data = {
                 'id': self.id,
                 'url': url,
                 'title': self.title,
-                'text': "\n".join(text)
+                'text': jsonized_text
             }
             if options.print_revision:
                 json_data['revid'] = self.revid
@@ -576,6 +582,48 @@ class Extractor(object):
                 out.write(line)
                 out.write('\n')
             out.write(footer)
+
+    def text_to_json(self, text_list):
+        """
+        convert text data into json data
+
+        example:
+        '<h1>title1</h1>
+        contents1
+        <h2>subtitle1<h2>
+        contents2
+        '
+        ->
+        '{'summary': 'contents1', # contents followed by h1 tag is interpreted as summary
+          'title2': 'contents2'}'
+        """
+        sub_header = re.compile(r'(\<h[2-9]\>)(?P<title>.*?)(\<\/h[2-9]\>)')
+        main_header = re.compile(r'(\<h1\>)(?P<title>.*?)(\<\/h1\>)')
+        dict_data = OrderedDict()
+        title = None
+        content = ''
+
+        def add_to_dict(dict_object, title, content):
+            if title:
+                dict_object[title] = content
+
+        for line in text_list:
+            if main_header.match(line):
+                add_to_dict(dict_data,title, content)
+                title = 'summary'
+                content = ''
+            elif sub_header.match(line):
+                add_to_dict(dict_data,title, content)
+                title = sub_header.search(line).group('title')
+                content = ''
+            else:
+                # タグを除去
+                line = re.sub(r'<.*?>', '', line)
+
+                content += line + '\n'
+        add_to_dict(dict_data,title, content)
+
+        return json.dumps(dict_data, ensure_ascii=False)
 
     def extract(self, out):
         """
@@ -3089,7 +3137,7 @@ def main():
     groupO = parser.add_argument_group('Output')
     groupO.add_argument("-o", "--output", default="text",
                         help="directory for extracted files (or '-' for dumping to stdout)")
-    groupO.add_argument("-b", "--bytes", default="1M",
+    groupO.add_argument("-b", "--bytes", default="4G",
                         help="maximum bytes per output file (default %(default)s)",
                         metavar="n[KMG]")
     groupO.add_argument("-c", "--compress", action="store_true",
@@ -3125,6 +3173,7 @@ def main():
                         help="comma separated list of elements that will be removed from the article text")
     groupP.add_argument("--keep_tables", action="store_true", default=options.keep_tables,
                         help="Preserve tables in the output article text (default=%(default)s)")
+    groupP.add_argument("--json-header", action="store_true")
     default_process_count = max(1, cpu_count() - 1)
     parser.add_argument("--processes", type=int, default=default_process_count,
                         help="Number of processes to use (default %(default)s)")
